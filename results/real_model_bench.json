@@ -1,0 +1,58 @@
+[
+  {
+    "model": "gpt2",
+    "family": "gpt2",
+    "seq": 1024,
+    "batch": 1,
+    "time_ref_s": 0.0137,
+    "time_fa_s": 0.0156,
+    "tok_per_s_ref": 74562.0,
+    "tok_per_s_fa": 65451.1,
+    "speedup_x": 0.878,
+    "mem_ref_mb": 363.3,
+    "mem_fa_mb": 363.3,
+    "mem_ratio": 1.0
+  },
+  {
+    "model": "Qwen/Qwen2.5-0.5B",
+    "family": "qwen2",
+    "seq": 1024,
+    "batch": 1,
+    "time_ref_s": 0.0413,
+    "time_fa_s": 0.0585,
+    "tok_per_s_ref": 24821.9,
+    "tok_per_s_fa": 17489.5,
+    "speedup_x": 0.705,
+    "mem_ref_mb": 2043.3,
+    "mem_fa_mb": 2043.3,
+    "mem_ratio": 1.0
+  },
+  {
+    "model": "Qwen/Qwen2.5-0.5B",
+    "family": "qwen2",
+    "seq": 2048,
+    "batch": 1,
+    "time_ref_s": 0.1001,
+    "time_fa_s": 0.0838,
+    "tok_per_s_ref": 20453.7,
+    "tok_per_s_fa": 24435.3,
+    "speedup_x": 1.195,
+    "mem_ref_mb": 2936.5,
+    "mem_fa_mb": 2936.5,
+    "mem_ratio": 1.0
+  },
+  {
+    "model": "Qwen/Qwen2.5-0.5B",
+    "family": "qwen2",
+    "seq": 4096,
+    "batch": 1,
+    "time_ref_s": 0.3066,
+    "time_fa_s": 0.1659,
+    "tok_per_s_ref": 13357.3,
+    "tok_per_s_fa": 24687.4,
+    "speedup_x": 1.848,
+    "mem_ref_mb": 4719.8,
+    "mem_fa_mb": 4719.8,
+    "mem_ratio": 1.0
+  }
+]
