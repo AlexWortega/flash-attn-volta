@@ -234,14 +234,182 @@ def unpatch_qwen2(model: torch.nn.Module) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Qwen3 (structurally identical attention to Qwen2 at the HF module level --
+# GQA + RoPE + grouped K/V. Adds QK-norm but the projections/shapes are the
+# same, so the same forward body works once the rotary helpers are imported
+# from the qwen3 namespace.)
+# ---------------------------------------------------------------------------
+
+def _is_qwen3_attention(mod) -> bool:
+    cls_name = type(mod).__name__
+    return cls_name in {"Qwen3Attention", "Qwen3SdpaAttention", "Qwen3FlashAttention2"}
+
+
+def _flash_qwen3_forward(self, *args, **kwargs):
+    """Replacement for ``Qwen3{Sdpa|Eager}Attention.forward``.
+
+    Qwen3's attention applies QK-norm (an extra RMSNorm on Q and K) before the
+    rotary embedding. That happens *inside* the original forward and is not
+    visible at the I/O surface — but importantly, the projection / GQA shape
+    is identical to Qwen2. So rather than re-implement QK-norm we delegate
+    cases where the original forward is needed (cache, custom mask, attn out)
+    and otherwise patch through.
+
+    Since QK-norm is the architectural delta, we must apply it ourselves
+    before calling the kernel. We read ``self.q_norm`` / ``self.k_norm`` if
+    present (Qwen3 always has them).
+    """
+    # Normalize args/kwargs.
+    hidden_states = kwargs.get("hidden_states", args[0] if args else None)
+    attention_mask = kwargs.get("attention_mask", None)
+    position_ids = kwargs.get("position_ids", None)
+    past_key_value = kwargs.get("past_key_value", None)
+    output_attentions = kwargs.get("output_attentions", False)
+    use_cache = kwargs.get("use_cache", False)
+    cache_position = kwargs.get("cache_position", None)
+    position_embeddings = kwargs.get("position_embeddings", None)
+
+    bsz, q_len, _ = hidden_states.size()
+
+    cache_has_content = False
+    if past_key_value is not None:
+        try:
+            cache_has_content = past_key_value.get_usable_length(q_len, self.layer_idx) > 0
+        except (AttributeError, TypeError):
+            cache_has_content = True
+    mask_ok = attention_mask is None or _is_causal_only_mask(attention_mask, q_len)
+    if output_attentions or cache_has_content or not mask_ok:
+        return self._orig_forward(*args, **kwargs)
+
+    from transformers.models.qwen3.modeling_qwen3 import apply_rotary_pos_emb, repeat_kv  # type: ignore
+
+    q = self.q_proj(hidden_states).view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
+    k = self.k_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    v = self.v_proj(hidden_states).view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+
+    # QK-norm (architectural delta vs Qwen2).
+    if hasattr(self, "q_norm"):
+        q = self.q_norm(q)
+    if hasattr(self, "k_norm"):
+        k = self.k_norm(k)
+
+    # Rotary: Qwen3 may pass position_embeddings precomputed (newer path) or
+    # expose a rotary_emb on the layer (older path).
+    if position_embeddings is not None:
+        cos, sin = position_embeddings
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+    else:
+        cos, sin = self.rotary_emb(v, seq_len=q_len)
+        q, k = apply_rotary_pos_emb(q, k, cos, sin, position_ids)
+
+    k = repeat_kv(k, self.num_key_value_groups)
+    v = repeat_kv(v, self.num_key_value_groups)
+
+    qb = q.transpose(1, 2).contiguous().to(torch.float16)
+    kb = k.transpose(1, 2).contiguous().to(torch.float16)
+    vb = v.transpose(1, 2).contiguous().to(torch.float16)
+
+    sm_scale = self.head_dim ** -0.5
+    out = flash_attn_forward(qb, kb, vb, causal=True, sm_scale=sm_scale)
+    out = out.to(hidden_states.dtype).contiguous().view(bsz, q_len, -1)
+    out = self.o_proj(out)
+    return out, None, past_key_value
+
+
+def patch_qwen3(model: torch.nn.Module) -> int:
+    """Patch every Qwen3*Attention block on ``model``. Returns count patched.
+
+    No-op if the installed ``transformers`` does not define Qwen3 (returns 0).
+    """
+    try:
+        from transformers.models.qwen3 import modeling_qwen3  # noqa: F401
+    except ImportError:
+        return 0
+    n = 0
+    for mod in model.modules():
+        if _is_qwen3_attention(mod):
+            if not hasattr(mod, "_orig_forward"):
+                mod._orig_forward = mod.forward
+            mod.forward = _flash_qwen3_forward.__get__(mod, type(mod))
+            n += 1
+    return n
+
+
+def unpatch_qwen3(model: torch.nn.Module) -> int:
+    n = 0
+    for mod in model.modules():
+        if _is_qwen3_attention(mod) and hasattr(mod, "_orig_forward"):
+            mod.forward = mod._orig_forward
+            del mod._orig_forward
+            n += 1
+    return n
+
+
+# ---------------------------------------------------------------------------
+# Linear-attention / state-space detection (Mamba, RWKV, ...).
+#
+# The kernel only implements softmax (causal) attention. If someone tries to
+# patch a Mamba or RWKV model we refuse loudly rather than silently produce
+# garbage. ``patch_model`` raises; the dedicated ``patch_<x>`` family helpers
+# above remain no-ops on non-matching modules (the safest fallthrough -- the
+# model just keeps using its own native forward).
+# ---------------------------------------------------------------------------
+
+_LINEAR_ATTN_CLASS_NAMES = {
+    # Mamba 1
+    "MambaMixer", "MambaModel", "MambaForCausalLM",
+    # Mamba 2
+    "Mamba2Mixer", "Mamba2Model", "Mamba2ForCausalLM",
+    # RWKV
+    "RwkvSelfAttention", "RwkvLinearAttention", "RwkvModel", "RwkvForCausalLM",
+    # RecurrentGemma (Griffin variant)
+    "RecurrentGemmaRecurrentBlock", "RecurrentGemmaModel", "RecurrentGemmaForCausalLM",
+    # RetNet (if/when it lands)
+    "RetNetAttention", "RetNetModel", "RetNetForCausalLM",
+}
+
+
+def _linear_attn_family(model: torch.nn.Module) -> Optional[str]:
+    """Return the family name (mamba / mamba2 / rwkv / ...) if the model is
+    a linear-attention / recurrent / state-space architecture; else None."""
+    seen_modules = {type(m).__name__ for m in model.modules()}
+    seen_modules.add(type(model).__name__)
+    if "MambaMixer" in seen_modules:
+        return "mamba"
+    if "Mamba2Mixer" in seen_modules:
+        return "mamba2"
+    if "RwkvSelfAttention" in seen_modules or "RwkvLinearAttention" in seen_modules:
+        return "rwkv"
+    if "RecurrentGemmaRecurrentBlock" in seen_modules:
+        return "recurrent_gemma"
+    if "RetNetAttention" in seen_modules:
+        return "retnet"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Auto-dispatch helper
 # ---------------------------------------------------------------------------
 
 def patch_model(model: torch.nn.Module) -> Tuple[str, int]:
-    """Detect model family and patch it. Returns ``(family, n_patched)``."""
+    """Detect model family and patch it. Returns ``(family, n_patched)``.
+
+    Refuses (with ``RuntimeError``) for any architecture that doesn't use
+    softmax attention -- Mamba, RWKV, RecurrentGemma, RetNet. The kernel
+    is mathematically wrong for those layers; failing fast is preferable to
+    silently producing garbage logits.
+    """
+    fam = _linear_attn_family(model)
+    if fam is not None:
+        raise RuntimeError(
+            f"flash-attn-volta only supports softmax MHA / GQA — model uses {fam}. "
+            "Refusing to patch a linear-attention / state-space architecture."
+        )
     cls = type(model).__name__
     if "GPT2" in cls or any(type(m).__name__ == "GPT2Attention" for m in model.modules()):
         return "gpt2", patch_gpt2(model)
+    if "Qwen3" in cls or any(_is_qwen3_attention(m) for m in model.modules()):
+        return "qwen3", patch_qwen3(model)
     if "Qwen2" in cls or any(_is_qwen2_attention(m) for m in model.modules()):
         return "qwen2", patch_qwen2(model)
     if "Llama" in cls or any(_is_llama_attention(m) for m in model.modules()):
