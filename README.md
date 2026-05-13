@@ -71,25 +71,37 @@ No NaN/Inf at seq up to 8192 (tested with causal and non-causal). The fully-mask
 
 ## Real-model validation
 
-Validated as a drop-in attention kernel on two HuggingFace transformers on a
-V100 32GB:
+Validated as a drop-in attention kernel on five HuggingFace targets on a
+V100 32GB. **One kernel, head_dim 64 + 128 paths, no per-model code:**
 
-| model | family | logits cos-sim | greedy match | prefill speedup @ seq=4096 |
-|---|---|---:|---:|---:|
-| `gpt2` (124M) | MHA | 1.000000 | 50 / 50 | n/a (max seq 1024) |
-| `Qwen/Qwen2.5-0.5B` | GQA 14:2 | 0.999998 | 50 / 50 | **1.85×** |
+| model | family | head_dim | logits cos-sim | greedy match | prefill speedup @ seq=4096 |
+|---|---|---:|---:|---:|---:|
+| `gpt2` (124M) | MHA | 64 | 1.000000 | 50 / 50 | n/a (max seq 1024) |
+| `Qwen/Qwen2.5-0.5B` | GQA 14:2 | 64 | 0.999998 | 50 / 50 | **1.85×** |
+| `Qwen/Qwen2.5-7B` | GQA 28:4 | 128 | 1.000000 | 50 / 50 | **1.38×** |
+| `Qwen/Qwen3-*` (1.7B/4B/8B) | GQA | 128 | patch wired up ([details](REAL_MODEL.md#b-qwen3)) | — | requires transformers ≥ 4.51 |
+| `state-spaces/mamba-130m-hf` | linear (SSM) | n/a | **refused** with clear `RuntimeError` | n/a | n/a |
 
-Patches live in `flash_attn_volta/patch_hf.py` (`patch_gpt2`, `patch_qwen2`).
-Full breakdown, including the GQA-expansion choice, what broke during
-integration, and per-seq throughput/memory, is in [`REAL_MODEL.md`](REAL_MODEL.md).
+On Qwen2.5-7B at seq=4096 the kernel removes **~4.3 GB** of per-attention-layer
+peak memory (eager 21 GB → kernel 16.7 GB). Eager fp16 attention on
+Qwen2.5-7B in fact produces NaN logits via QK^T overflow in late layers; the
+kernel's fp32 accumulator is required for correctness, not just speed.
+
+Patches live in `flash_attn_volta/patch_hf.py` (`patch_gpt2`, `patch_qwen2`,
+`patch_qwen3`, `patch_llama`, plus `patch_model` auto-dispatch that refuses
+Mamba/RWKV/RecurrentGemma/RetNet with a clear error). Full breakdown — what
+broke at each scale, fp32-reference parity test, per-seq throughput/memory,
+the QK-norm delta for Qwen3, the linear-attention safety check — in
+[`REAL_MODEL.md`](REAL_MODEL.md).
 
 ```python
 from transformers import AutoModelForCausalLM
-from flash_attn_volta.patch_hf import patch_qwen2
+from flash_attn_volta.patch_hf import patch_qwen2, patch_model
 
-model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B",
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B",
                                               torch_dtype="float16").cuda().eval()
 patch_qwen2(model)            # routes attention through flash_attn_volta on prefill
+# or: patch_model(model)       # auto-dispatch (raises on Mamba/RWKV/etc.)
 ```
 
 ## What's NOT here
