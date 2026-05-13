@@ -69,13 +69,38 @@ Forward FLOPs counted as `4 · B · H · S · S · D`.
 
 No NaN/Inf at seq up to 8192 (tested with causal and non-causal). The fully-masked-row guard (`m_curr_safe`, `safe_l`) handles the causal-row-0 edge case that otherwise NaNs out from `exp(-inf − (−inf))`.
 
+## Real-model validation
+
+Validated as a drop-in attention kernel on two HuggingFace transformers on a
+V100 32GB:
+
+| model | family | logits cos-sim | greedy match | prefill speedup @ seq=4096 |
+|---|---|---:|---:|---:|
+| `gpt2` (124M) | MHA | 1.000000 | 50 / 50 | n/a (max seq 1024) |
+| `Qwen/Qwen2.5-0.5B` | GQA 14:2 | 0.999998 | 50 / 50 | **1.85×** |
+
+Patches live in `flash_attn_volta/patch_hf.py` (`patch_gpt2`, `patch_qwen2`).
+Full breakdown, including the GQA-expansion choice, what broke during
+integration, and per-seq throughput/memory, is in [`REAL_MODEL.md`](REAL_MODEL.md).
+
+```python
+from transformers import AutoModelForCausalLM
+from flash_attn_volta.patch_hf import patch_qwen2
+
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-0.5B",
+                                              torch_dtype="float16").cuda().eval()
+patch_qwen2(model)            # routes attention through flash_attn_volta on prefill
+```
+
 ## What's NOT here
 
 - **Backward pass.** Out of scope for the brief that produced this — would need a second kernel and a saved-LSE pattern.
 - **fp8, bf16.** fp16 only. (V100 doesn't have native bf16 anyway.)
 - **Variable-length / packed sequences.** Standard dense `(B, S, H, D)`.
 - **Dropout, ALiBi, sliding window.** Forward-only causal/non-causal is all there is.
-- **MQA/GQA.** Heads are 1:1 between Q and K/V.
+- **MQA/GQA in the kernel.** Heads are 1:1 between Q and K/V at the kernel
+  level; GQA models are handled in the HF patch via `repeat_kv` before
+  calling the kernel (see `flash_attn_volta/patch_hf.py`).
 
 ## Layout
 
