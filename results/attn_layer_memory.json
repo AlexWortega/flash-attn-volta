@@ -1,0 +1,50 @@
+[
+  {
+    "model": "Qwen/Qwen2.5-0.5B",
+    "seq": 1024,
+    "ref_peak_mb": 1299.8,
+    "fa_peak_mb": 1170.8,
+    "saved_mb": 129.0,
+    "attn_matrix_mb_theoretical": 28.0
+  },
+  {
+    "model": "Qwen/Qwen2.5-0.5B",
+    "seq": 2048,
+    "ref_peak_mb": 1733.4,
+    "fa_peak_mb": 1191.2,
+    "saved_mb": 542.2,
+    "attn_matrix_mb_theoretical": 112.0
+  },
+  {
+    "model": "Qwen/Qwen2.5-0.5B",
+    "seq": 4096,
+    "ref_peak_mb": 3450.6,
+    "fa_peak_mb": 1227.6,
+    "saved_mb": 2223.0,
+    "attn_matrix_mb_theoretical": 448.0
+  },
+  {
+    "model": "Qwen/Qwen2.5-7B",
+    "seq": 1024,
+    "ref_peak_mb": 16679.3,
+    "fa_peak_mb": 16445.8,
+    "saved_mb": 233.5,
+    "attn_matrix_mb_theoretical": 56.0
+  },
+  {
+    "model": "Qwen/Qwen2.5-7B",
+    "seq": 2048,
+    "ref_peak_mb": 17552.8,
+    "fa_peak_mb": 16522.8,
+    "saved_mb": 1030.0,
+    "attn_matrix_mb_theoretical": 224.0
+  },
+  {
+    "model": "Qwen/Qwen2.5-7B",
+    "seq": 4096,
+    "ref_peak_mb": 20992.8,
+    "fa_peak_mb": 16676.8,
+    "saved_mb": 4316.0,
+    "attn_matrix_mb_theoretical": 896.0
+  }
+]

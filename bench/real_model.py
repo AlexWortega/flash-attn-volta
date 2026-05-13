@@ -34,14 +34,17 @@ os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from flash_attn_volta.patch_hf import (  # noqa: E402
     patch_gpt2,
     patch_qwen2,
+    patch_qwen3,
     unpatch_gpt2,
     unpatch_qwen2,
+    unpatch_qwen3,
 )
 
 MODELS = [
     # (model_id, family, max_seq_supported)
     ("gpt2", "gpt2", 1024),                       # gpt2 has hard 1024 context limit
     ("Qwen/Qwen2.5-0.5B", "qwen2", 32768),
+    ("Qwen/Qwen2.5-7B", "qwen2", 32768),
 ]
 SEQ_LENS = [1024, 2048, 4096]
 N_WARMUP = 2
@@ -54,6 +57,8 @@ def _patch_unpatch(family: str):
         return patch_gpt2, unpatch_gpt2
     if family == "qwen2":
         return patch_qwen2, unpatch_qwen2
+    if family == "qwen3":
+        return patch_qwen3, unpatch_qwen3
     raise ValueError(family)
 
 
