@@ -1,0 +1,65 @@
+{
+  "results": [
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "n_nan": 0,
+      "n_inf": 0,
+      "out_min": -0.03179931640625,
+      "out_max": 0.03155517578125,
+      "verdict": "pass"
+    },
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 16,
+      "D": 64,
+      "causal": true,
+      "n_nan": 0,
+      "n_inf": 0,
+      "out_min": -1.5224609375,
+      "out_max": 1.80078125,
+      "verdict": "pass"
+    },
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 8,
+      "D": 128,
+      "causal": false,
+      "n_nan": 0,
+      "n_inf": 0,
+      "out_min": -0.032867431640625,
+      "out_max": 0.03271484375,
+      "verdict": "pass"
+    },
+    {
+      "B": 1,
+      "N": 8192,
+      "H": 4,
+      "D": 64,
+      "causal": false,
+      "n_nan": 0,
+      "n_inf": 0,
+      "out_min": -0.020904541015625,
+      "out_max": 0.017822265625,
+      "verdict": "pass"
+    },
+    {
+      "B": 1,
+      "N": 8192,
+      "H": 4,
+      "D": 64,
+      "causal": true,
+      "n_nan": 0,
+      "n_inf": 0,
+      "out_min": -1.232421875,
+      "out_max": 1.40625,
+      "verdict": "pass"
+    }
+  ],
+  "overall_pass": true
+}

@@ -1,0 +1,66 @@
+{
+  "results": [
+    {
+      "B": 2,
+      "N": 1024,
+      "H": 8,
+      "D": 64,
+      "causal": false,
+      "err_vs_sdpa": 0.0001220703125,
+      "err_vs_fp32": 0.000244140625,
+      "verdict": "pass"
+    },
+    {
+      "B": 2,
+      "N": 1024,
+      "H": 8,
+      "D": 64,
+      "causal": true,
+      "err_vs_sdpa": 0.000244140625,
+      "err_vs_fp32": 0.001953125,
+      "verdict": "pass"
+    },
+    {
+      "B": 1,
+      "N": 2048,
+      "H": 16,
+      "D": 128,
+      "causal": false,
+      "err_vs_sdpa": 0.000244140625,
+      "err_vs_fp32": 0.000244140625,
+      "verdict": "pass"
+    },
+    {
+      "B": 1,
+      "N": 2048,
+      "H": 16,
+      "D": 128,
+      "causal": true,
+      "err_vs_sdpa": 0.001953125,
+      "err_vs_fp32": 0.001953125,
+      "verdict": "pass"
+    },
+    {
+      "B": 4,
+      "N": 512,
+      "H": 4,
+      "D": 32,
+      "causal": false,
+      "err_vs_sdpa": 0.000244140625,
+      "err_vs_fp32": 0.000244140625,
+      "verdict": "pass"
+    },
+    {
+      "B": 4,
+      "N": 512,
+      "H": 4,
+      "D": 32,
+      "causal": true,
+      "err_vs_sdpa": 0.0009765625,
+      "err_vs_fp32": 0.0009765625,
+      "verdict": "pass"
+    }
+  ],
+  "overall_pass": true,
+  "tol": 0.01
+}

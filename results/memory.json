@@ -1,0 +1,52 @@
+{
+  "rows": [
+    {
+      "B": 1,
+      "N": 1024,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "qkv_bytes": 6291456,
+      "fa_extra_bytes": 10485760,
+      "eager_extra_bytes": 77725696,
+      "theory_fa_extra_bytes": 2097152,
+      "theory_eager_extra_bytes": 33554432
+    },
+    {
+      "B": 1,
+      "N": 2048,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "qkv_bytes": 12582912,
+      "fa_extra_bytes": 20971520,
+      "eager_extra_bytes": 272629760,
+      "theory_fa_extra_bytes": 4194304,
+      "theory_eager_extra_bytes": 134217728
+    },
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "qkv_bytes": 25165824,
+      "fa_extra_bytes": 41943040,
+      "eager_extra_bytes": 1082130432,
+      "theory_fa_extra_bytes": 8388608,
+      "theory_eager_extra_bytes": 536870912
+    },
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 16,
+      "D": 64,
+      "causal": true,
+      "qkv_bytes": 25165824,
+      "fa_extra_bytes": 41943040,
+      "eager_extra_bytes": 1115684864,
+      "theory_fa_extra_bytes": 8388608,
+      "theory_eager_extra_bytes": 536870912
+    }
+  ]
+}

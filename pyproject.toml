@@ -1,0 +1,15 @@
+[project]
+name = "flash-attn-volta"
+version = "0.1.0"
+description = "FlashAttention forward kernel for NVIDIA Volta (SM 7.0)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "Apache-2.0" }
+dependencies = ["triton==2.3.0"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["flash_attn_volta*"]
