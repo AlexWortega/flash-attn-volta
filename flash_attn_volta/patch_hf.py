@@ -23,7 +23,7 @@ from typing import Optional, Tuple
 
 import torch
 
-from .triton_fa import flash_attn_forward
+from .autograd import flash_attn
 
 
 def _is_causal_only_mask(mask: torch.Tensor, q_len: int) -> bool:
@@ -84,7 +84,7 @@ def _flash_gpt2_attn(self, query, key, value, attention_mask=None, head_mask=Non
     if getattr(self, "scale_attn_by_inverse_layer_idx", False):
         sm_scale = sm_scale / float(self.layer_idx + 1)
 
-    out = flash_attn_forward(q, k, v, causal=True, sm_scale=sm_scale)
+    out = flash_attn(q, k, v, causal=True, sm_scale=sm_scale)
     out = out.to(value.dtype).transpose(1, 2).contiguous()
     return out, None
 
@@ -193,7 +193,7 @@ def _flash_qwen2_forward(
     v = value_states.transpose(1, 2).contiguous().to(torch.float16)
 
     sm_scale = self.head_dim ** -0.5
-    attn_output = flash_attn_forward(q, k, v, causal=True, sm_scale=sm_scale)
+    attn_output = flash_attn(q, k, v, causal=True, sm_scale=sm_scale)
 
     # Back to (B, N, H_total) and project.
     attn_output = attn_output.to(hidden_states.dtype).contiguous().view(bsz, q_len, self.hidden_size)
@@ -310,7 +310,7 @@ def _flash_qwen3_forward(self, *args, **kwargs):
     vb = v.transpose(1, 2).contiguous().to(torch.float16)
 
     sm_scale = self.head_dim ** -0.5
-    out = flash_attn_forward(qb, kb, vb, causal=True, sm_scale=sm_scale)
+    out = flash_attn(qb, kb, vb, causal=True, sm_scale=sm_scale)
     out = out.to(hidden_states.dtype).contiguous().view(bsz, q_len, -1)
     out = self.o_proj(out)
     return out, None, past_key_value
@@ -474,7 +474,7 @@ def _flash_llama_forward(self, *args, **kwargs):
     k = key_states.transpose(1, 2).contiguous().to(torch.float16)
     v = value_states.transpose(1, 2).contiguous().to(torch.float16)
     sm_scale = self.head_dim ** -0.5
-    attn_output = flash_attn_forward(q, k, v, causal=True, sm_scale=sm_scale)
+    attn_output = flash_attn(q, k, v, causal=True, sm_scale=sm_scale)
     attn_output = attn_output.to(hidden_states.dtype).contiguous().view(bsz, q_len, self.hidden_size)
     attn_output = self.o_proj(attn_output)
     return attn_output, None, past_key_value
