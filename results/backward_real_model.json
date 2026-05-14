@@ -1,0 +1,158 @@
+{
+  "model": "Qwen/Qwen2.5-7B",
+  "device": "Tesla V100-SXM2-32GB",
+  "torch": "2.0.1+cu117",
+  "params": 7615616512,
+  "throughput": [
+    {
+      "seq": 1024,
+      "mode": "fwd_only",
+      "ref": {
+        "oom": false,
+        "time_s": 0.2384,
+        "tok_per_s": 4294.8,
+        "peak_mb": 17267.8
+      },
+      "fa": {
+        "oom": false,
+        "time_s": 0.2265,
+        "tok_per_s": 4521.4,
+        "peak_mb": 17267.8
+      }
+    },
+    {
+      "seq": 1024,
+      "mode": "fwd_bwd",
+      "ref": {
+        "oom": false,
+        "time_s": 0.5243,
+        "tok_per_s": 1952.9,
+        "peak_mb": 28767.1
+      },
+      "fa": {
+        "oom": false,
+        "time_s": 0.5068,
+        "tok_per_s": 2020.7,
+        "peak_mb": 24326.2
+      }
+    },
+    {
+      "seq": 1536,
+      "mode": "fwd_only",
+      "ref": {
+        "oom": false,
+        "time_s": 0.3867,
+        "tok_per_s": 3971.8,
+        "peak_mb": 18838.4
+      },
+      "fa": {
+        "oom": false,
+        "time_s": 0.3371,
+        "tok_per_s": 4556.9,
+        "peak_mb": 18838.4
+      }
+    },
+    {
+      "seq": 1536,
+      "mode": "fwd_bwd",
+      "ref": {
+        "oom": true,
+        "msg": "CUDA out of memory. Tried to allocate 126.00 MiB (GPU 0; 31.74 GiB total capacity; 30.93 GiB already allocated; 33.62 MiB free; 31.33 GiB reserved in total by PyTorch) If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF"
+      },
+      "fa": {
+        "oom": false,
+        "time_s": 0.7656,
+        "tok_per_s": 2006.2,
+        "peak_mb": 28285.1
+      }
+    },
+    {
+      "seq": 1792,
+      "mode": "fwd_only",
+      "ref": {
+        "oom": false,
+        "time_s": 0.4575,
+        "tok_per_s": 3916.6,
+        "peak_mb": 19062.4
+      },
+      "fa": {
+        "oom": false,
+        "time_s": 0.3869,
+        "tok_per_s": 4631.8,
+        "peak_mb": 19062.4
+      }
+    },
+    {
+      "seq": 1792,
+      "mode": "fwd_bwd",
+      "ref": {
+        "oom": true,
+        "msg": "CUDA out of memory. Tried to allocate 172.00 MiB (GPU 0; 31.74 GiB total capacity; 30.78 GiB already allocated; 141.62 MiB free; 31.22 GiB reserved in total by PyTorch) If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF"
+      },
+      "fa": {
+        "oom": false,
+        "time_s": 0.9054,
+        "tok_per_s": 1979.3,
+        "peak_mb": 30168.2
+      }
+    },
+    {
+      "seq": 2048,
+      "mode": "fwd_only",
+      "ref": {
+        "oom": false,
+        "time_s": 0.5251,
+        "tok_per_s": 3900.1,
+        "peak_mb": 19286.4
+      },
+      "fa": {
+        "oom": false,
+        "time_s": 0.4419,
+        "tok_per_s": 4634.1,
+        "peak_mb": 19286.4
+      }
+    },
+    {
+      "seq": 2048,
+      "mode": "fwd_bwd",
+      "ref": {
+        "oom": true,
+        "msg": "CUDA out of memory. Tried to allocate 224.00 MiB (GPU 0; 31.74 GiB total capacity; 30.86 GiB already allocated; 209.62 MiB free; 31.15 GiB reserved in total by PyTorch) If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF"
+      },
+      "fa": {
+        "oom": true,
+        "msg": "CUDA out of memory. Tried to allocate 1.16 GiB (GPU 0; 31.74 GiB total capacity; 30.23 GiB already allocated; 849.62 MiB free; 30.53 GiB reserved in total by PyTorch) If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF"
+      }
+    },
+    {
+      "seq": 4096,
+      "mode": "fwd_only",
+      "ref": {
+        "oom": false,
+        "time_s": 1.3377,
+        "tok_per_s": 3062.0,
+        "peak_mb": 20161.0
+      },
+      "fa": {
+        "oom": false,
+        "time_s": 0.9663,
+        "tok_per_s": 4238.8,
+        "peak_mb": 19968.9
+      }
+    },
+    {
+      "seq": 4096,
+      "mode": "fwd_bwd",
+      "ref": {
+        "oom": true,
+        "msg": "CUDA out of memory. Tried to allocate 1.75 GiB (GPU 0; 31.74 GiB total capacity; 29.64 GiB already allocated; 1.01 GiB free; 30.35 GiB reserved in total by PyTorch) If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF"
+      },
+      "fa": {
+        "oom": true,
+        "msg": "CUDA out of memory. Tried to allocate 28.00 MiB (GPU 0; 31.74 GiB total capacity; 30.74 GiB already allocated; 13.62 MiB free; 31.35 GiB reserved in total by PyTorch) If reserved memory is >> allocated memory try setting max_split_size_mb to avoid fragmentation.  See documentation for Memory Management and PYTORCH_CUDA_ALLOC_CONF"
+      }
+    }
+  ],
+  "max_seq_eager": 1024,
+  "max_seq_fa": 1792
+}
