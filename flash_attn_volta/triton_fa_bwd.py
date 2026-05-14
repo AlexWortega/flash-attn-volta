@@ -31,25 +31,46 @@ import triton.language as tl
 
 
 # -----------------------------------------------------------------------------
-# Tile selection (mirrors forward — proven on V100 + Triton 2.3)
+# Autotune config sets (mirror forward constraints: BN=64, nw=4, BLOCK_D=64).
 # -----------------------------------------------------------------------------
+#
+# Backward keeps Q + dO (and dK/dV also Q^T + dO^T) resident per iteration, so
+# SMEM is tighter than forward. We sweep BLOCK_M and num_stages only — same
+# Triton-2.3 V100 quirks apply (BN ∈ {32, 128} miscompiles, num_warps=8 emits
+# wrong output, BM is the K-dim of Q^T @ dS so must be 64).
+#
+# Note: BM = 64 (not 128) on backward because BM is a K-dim in two of the
+# backward dots; widening it would force re-loading Q^T at twice the SMEM
+# cost, and BM=128 spilled badly in probes.
 
-def _bwd_block_sizes(D_INT: int, kernel: str) -> tuple[int, int, int, int]:
-    """BLOCK_M, BLOCK_N, num_warps, num_stages.
+_BWD_DQ_CONFIGS_D64 = [
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=1),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=2),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=3),
+]
 
-    Backward keeps Q + dO (and in dK/dV also Q^T + dO^T) resident per
-    iteration, which pushes shared-memory usage well above the forward.
-    num_stages=1 across the board so the D=128 path stays inside the V100's
-    96 KB SMEM budget. BLOCK_M and BLOCK_N stay at 64 — every tl.dot K-dim
-    must remain 64 on Volta (BM is the K-dim of dO^T @ P and Q^T @ dS).
-    """
-    return 64, 64, 4, 1
+_BWD_DQ_CONFIGS_D128 = [
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=1),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=2),
+]
+
+_BWD_DKDV_CONFIGS_D64 = [
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=1),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=2),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=3),
+]
+
+_BWD_DKDV_CONFIGS_D128 = [
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=1),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=2),
+]
 
 
 # -----------------------------------------------------------------------------
 # dQ kernel — D = 64
 # -----------------------------------------------------------------------------
 
+@triton.autotune(configs=_BWD_DQ_CONFIGS_D64, key=['N_CTX'])
 @triton.jit
 def _fa_bwd_dq_kernel_d64(
     Q, K, V, DO, DQ, LSE, D_VEC,
@@ -163,6 +184,7 @@ def _fa_bwd_dq_kernel_d64(
 # dQ kernel — D = 128 (split into two 64-halves)
 # -----------------------------------------------------------------------------
 
+@triton.autotune(configs=_BWD_DQ_CONFIGS_D128, key=['N_CTX'])
 @triton.jit
 def _fa_bwd_dq_kernel_d128(
     Q, K, V, DO, DQ, LSE, D_VEC,
@@ -294,6 +316,7 @@ def _fa_bwd_dq_kernel_d128(
 # swapped strides — same data, no in-kernel transpose.
 # -----------------------------------------------------------------------------
 
+@triton.autotune(configs=_BWD_DKDV_CONFIGS_D64, key=['N_CTX'])
 @triton.jit
 def _fa_bwd_dkdv_kernel_d64(
     Q, K, V, DO, DK, DV, LSE, D_VEC,
@@ -418,6 +441,7 @@ def _fa_bwd_dkdv_kernel_d64(
 # dK/dV kernel — D = 128 (split into two 64-halves)
 # -----------------------------------------------------------------------------
 
+@triton.autotune(configs=_BWD_DKDV_CONFIGS_D128, key=['N_CTX'])
 @triton.jit
 def _fa_bwd_dkdv_kernel_d128(
     Q, K, V, DO, DK, DV, LSE, D_VEC,
@@ -629,19 +653,15 @@ def _run_bwd_kernels(do, q, k, v, o, lse, causal, sm_scale, D_INT):
     dk_ = torch.empty_like(k_)
     dv_ = torch.empty_like(v_)
 
-    BLOCK_D = 64
-    BLOCK_M_dq, BLOCK_N_dq, nw_dq, ns_dq = _bwd_block_sizes(D_INT, "dq")
-    BLOCK_M_dkdv, BLOCK_N_dkdv, nw_dkdv, ns_dkdv = _bwd_block_sizes(D_INT, "dkdv")
-
-    grid_dq   = (triton.cdiv(N, BLOCK_M_dq), B * H, 1)
-    grid_dkdv = (triton.cdiv(N, BLOCK_N_dkdv), B * H, 1)
-
     if D_INT == 64:
         kfn_dq, kfn_dkdv = _fa_bwd_dq_kernel_d64, _fa_bwd_dkdv_kernel_d64
     elif D_INT == 128:
         kfn_dq, kfn_dkdv = _fa_bwd_dq_kernel_d128, _fa_bwd_dkdv_kernel_d128
     else:
         raise AssertionError(f"unreachable D_INT={D_INT}")
+
+    grid_dq   = lambda meta: (triton.cdiv(N, meta['BLOCK_M']), B * H, 1)
+    grid_dkdv = lambda meta: (triton.cdiv(N, meta['BLOCK_N']), B * H, 1)
 
     # dQ kernel
     kfn_dq[grid_dq](
@@ -655,9 +675,7 @@ def _run_bwd_kernels(do, q, k, v, o, lse, causal, sm_scale, D_INT):
         lse_c.stride(0), lse_c.stride(1),
         d_vec.stride(0), d_vec.stride(1),
         B, H, N,
-        BLOCK_M=BLOCK_M_dq, BLOCK_D=BLOCK_D, BLOCK_N=BLOCK_N_dq,
         IS_CAUSAL=causal,
-        num_warps=nw_dq, num_stages=ns_dq,
     )
 
     # dK/dV kernel
@@ -673,9 +691,7 @@ def _run_bwd_kernels(do, q, k, v, o, lse, causal, sm_scale, D_INT):
         lse_c.stride(0), lse_c.stride(1),
         d_vec.stride(0), d_vec.stride(1),
         B, H, N,
-        BLOCK_M=BLOCK_M_dkdv, BLOCK_D=BLOCK_D, BLOCK_N=BLOCK_N_dkdv,
         IS_CAUSAL=causal,
-        num_warps=nw_dkdv, num_stages=ns_dkdv,
     )
 
     dq = dq_.permute(0, 2, 1, 3).contiguous()
