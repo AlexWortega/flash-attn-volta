@@ -51,18 +51,20 @@ def _pick_block_sizes(head_dim_internal: int) -> tuple[int, int, int, int]:
 
 @triton.jit
 def _fa_fwd_kernel_d64(
-    Q, K, V, Out,
+    Q, K, V, Out, Lse,
     sm_scale,
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
     stride_vz, stride_vh, stride_vn, stride_vk,
     stride_oz, stride_oh, stride_om, stride_on,
+    stride_lz, stride_lh,
     Z, H, N_CTX,
     BLOCK_M: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_N: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     EVEN_N: tl.constexpr,
+    WRITE_LSE: tl.constexpr,
 ):
     """One program = one (Q tile, batch_head). Streams K/V tiles. D fixed at BLOCK_D."""
     start_m = tl.program_id(0)
@@ -143,6 +145,15 @@ def _fa_fwd_kernel_d64(
     tl.store(out_ptrs, acc.to(Out.dtype.element_ty),
              mask=q_row_mask[:, None])
 
+    if WRITE_LSE:
+        # lse = m + log(l). For fully-masked rows (l==0) store +inf so that
+        # exp(s - lse) → 0 in the backward pass.
+        lse_val = tl.where(l_prev > 0,
+                           m_prev + tl.log(safe_l),
+                           float("inf"))
+        lse_ptrs = Lse + off_z * stride_lz + off_h * stride_lh + offs_m
+        tl.store(lse_ptrs, lse_val, mask=q_row_mask)
+
 
 # -----------------------------------------------------------------------------
 # Triton kernel (D = 128, two 64-halves)
@@ -150,18 +161,20 @@ def _fa_fwd_kernel_d64(
 
 @triton.jit
 def _fa_fwd_kernel_d128(
-    Q, K, V, Out,
+    Q, K, V, Out, Lse,
     sm_scale,
     stride_qz, stride_qh, stride_qm, stride_qk,
     stride_kz, stride_kh, stride_kn, stride_kk,
     stride_vz, stride_vh, stride_vn, stride_vk,
     stride_oz, stride_oh, stride_om, stride_on,
+    stride_lz, stride_lh,
     Z, H, N_CTX,
     BLOCK_M: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_N: tl.constexpr,
     IS_CAUSAL: tl.constexpr,
     EVEN_N: tl.constexpr,
+    WRITE_LSE: tl.constexpr,
 ):
     """Same as _fa_fwd_kernel_d64 but the head_dim is split into two BLOCK_D halves."""
     start_m = tl.program_id(0)
@@ -268,6 +281,13 @@ def _fa_fwd_kernel_d128(
     tl.store(out_ptrs_lo, acc_lo.to(Out.dtype.element_ty), mask=q_row_mask[:, None])
     tl.store(out_ptrs_hi, acc_hi.to(Out.dtype.element_ty), mask=q_row_mask[:, None])
 
+    if WRITE_LSE:
+        lse_val = tl.where(l_prev > 0,
+                           m_prev + tl.log(safe_l),
+                           float("inf"))
+        lse_ptrs = Lse + off_z * stride_lz + off_h * stride_lh + offs_m
+        tl.store(lse_ptrs, lse_val, mask=q_row_mask)
+
 
 # -----------------------------------------------------------------------------
 # Python wrapper
@@ -279,16 +299,21 @@ def flash_attn_forward(
     v: torch.Tensor,
     causal: bool = False,
     sm_scale: float | None = None,
-) -> torch.Tensor:
+    return_softmax_lse: bool = False,
+):
     """FlashAttention forward -- fp16 in/out, fp32 accumulation, V100-friendly.
 
     Args:
         q, k, v: (B, N, H, D) fp16 on CUDA. D in {16, 32, 64, 128}.
         causal:  if True apply lower-triangular mask.
         sm_scale: softmax scale (default 1/sqrt(D)).
+        return_softmax_lse: if True, also return per-row log-sum-exp (used by
+            the backward pass to recompute softmax without materialising P).
 
     Returns:
-        out: (B, N, H, D) fp16.
+        out: (B, N, H, D) fp16. If return_softmax_lse, also returns
+        lse: (B, H, N) fp32. For fully-masked rows lse = +inf so the backward
+        recomputed exp(s - lse) is exactly zero.
     """
     assert q.is_cuda and k.is_cuda and v.is_cuda, "tensors must be on CUDA"
     assert q.dtype == torch.float16 == k.dtype == v.dtype, "fp16 only"
@@ -308,23 +333,46 @@ def flash_attn_forward(
         q_pad[..., :D] = q
         k_pad[..., :D] = k
         v_pad[..., :D] = v
-        out_full = _run_kernel(q_pad, k_pad, v_pad, causal, sm_scale, D_INT)
-        return out_full[..., :D].contiguous()
+        out_full, lse = _run_kernel(q_pad, k_pad, v_pad, causal, sm_scale, D_INT,
+                                    write_lse=return_softmax_lse)
+        out = out_full[..., :D].contiguous()
+        if return_softmax_lse:
+            return out, lse
+        return out
 
-    return _run_kernel(q, k, v, causal, sm_scale, D)
+    out, lse = _run_kernel(q, k, v, causal, sm_scale, D,
+                           write_lse=return_softmax_lse)
+    if return_softmax_lse:
+        return out, lse
+    return out
 
 
 def _run_kernel(
     q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     causal: bool, sm_scale: float, D_INT: int,
-) -> torch.Tensor:
-    """Permute, dispatch to the correct kernel, permute back."""
+    write_lse: bool = False,
+):
+    """Permute, dispatch to the correct kernel, permute back.
+
+    Returns (out, lse) where lse is None unless write_lse=True. lse layout is
+    (B, H, N) fp32 — kept in (B, H, N) order to match the kernel grid (one
+    program writes a contiguous BLOCK_M-row stripe per (batch, head)).
+    """
     B, N, H, _ = q.shape
     # (B,N,H,D) -> (B,H,N,D); contiguous for predictable strides.
     q_ = q.permute(0, 2, 1, 3).contiguous()
     k_ = k.permute(0, 2, 1, 3).contiguous()
     v_ = v.permute(0, 2, 1, 3).contiguous()
     out_ = torch.empty_like(q_)
+
+    if write_lse:
+        lse = torch.empty((B, H, N), dtype=torch.float32, device=q.device)
+        lse_stride_z, lse_stride_h = lse.stride(0), lse.stride(1)
+    else:
+        # Triton needs a real pointer even when WRITE_LSE=False; allocate the
+        # smallest legal tensor and pass zero strides (kernel never reads it).
+        lse = torch.empty((1,), dtype=torch.float32, device=q.device)
+        lse_stride_z, lse_stride_h = 0, 0
 
     BLOCK_M, BLOCK_N, num_warps, num_stages = _pick_block_sizes(D_INT)
     grid = (triton.cdiv(N, BLOCK_M), B * H, 1)
@@ -340,20 +388,25 @@ def _run_kernel(
 
     even_n = (N % BLOCK_N) == 0
     kernel[grid](
-        q_, k_, v_, out_,
+        q_, k_, v_, out_, lse,
         sm_scale,
         q_.stride(0), q_.stride(1), q_.stride(2), q_.stride(3),
         k_.stride(0), k_.stride(1), k_.stride(2), k_.stride(3),
         v_.stride(0), v_.stride(1), v_.stride(2), v_.stride(3),
         out_.stride(0), out_.stride(1), out_.stride(2), out_.stride(3),
+        lse_stride_z, lse_stride_h,
         B, H, N,
         BLOCK_M=BLOCK_M, BLOCK_D=BLOCK_D, BLOCK_N=BLOCK_N,
         IS_CAUSAL=causal, EVEN_N=even_n,
+        WRITE_LSE=write_lse,
         num_warps=num_warps,
         num_stages=num_stages,
     )
 
-    return out_.permute(0, 2, 1, 3).contiguous()
+    out = out_.permute(0, 2, 1, 3).contiguous()
+    if write_lse:
+        return out, lse  # lse is (B, H, N) fp32
+    return out, None
 
 
 # Public alias
