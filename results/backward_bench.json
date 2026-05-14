@@ -1,0 +1,156 @@
+{
+  "throughput": [
+    {
+      "B": 1,
+      "N": 1024,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "t_fa_s": 0.0020720243453979494,
+      "tflops_fa": 10.364181544341642,
+      "t_eager_s": 0.0012072023004293443,
+      "tflops_eager": 17.78892938852289,
+      "speedup_vs_eager": 0.5826197472585637
+    },
+    {
+      "B": 1,
+      "N": 1024,
+      "H": 16,
+      "D": 64,
+      "causal": true,
+      "t_fa_s": 0.002010335586965084,
+      "tflops_fa": 10.68221476018321,
+      "t_eager_s": 0.0013165473937988281,
+      "tflops_eager": 16.311479997720014,
+      "speedup_vs_eager": 0.6548893639127994
+    },
+    {
+      "B": 1,
+      "N": 2048,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "t_fa_s": 0.003462017327547073,
+      "tflops_fa": 24.811934139238367,
+      "t_eager_s": 0.003991447761654854,
+      "tflops_eager": 21.520849338232637,
+      "speedup_vs_eager": 1.1529254142938954
+    },
+    {
+      "B": 1,
+      "N": 2048,
+      "H": 16,
+      "D": 64,
+      "causal": true,
+      "t_fa_s": 0.0021038927137851716,
+      "tflops_fa": 40.828767245196694,
+      "t_eager_s": 0.004656807892024517,
+      "tflops_eager": 18.445971556420766,
+      "speedup_vs_eager": 2.2134246016976435
+    },
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "t_fa_s": 0.010584750398993491,
+      "tflops_fa": 32.46154805054948,
+      "t_eager_s": 0.015174790658056736,
+      "tflops_eager": 22.642644068211524,
+      "speedup_vs_eager": 1.4336465278859778
+    },
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 16,
+      "D": 64,
+      "causal": true,
+      "t_fa_s": 0.005938999913632869,
+      "tflops_fa": 57.85441802941911,
+      "t_eager_s": 0.017772069200873375,
+      "tflops_eager": 19.333560982483377,
+      "speedup_vs_eager": 2.992434662286811
+    },
+    {
+      "B": 1,
+      "N": 1024,
+      "H": 8,
+      "D": 128,
+      "causal": false,
+      "t_fa_s": 0.002021450363099575,
+      "tflops_fa": 10.623479493739204,
+      "t_eager_s": 0.001081337220966816,
+      "tflops_eager": 19.85951844032475,
+      "speedup_vs_eager": 0.5349313743765423
+    },
+    {
+      "B": 1,
+      "N": 2048,
+      "H": 8,
+      "D": 128,
+      "causal": false,
+      "t_fa_s": 0.0033053817227482797,
+      "tflops_fa": 25.98772339328435,
+      "t_eager_s": 0.002186126634478569,
+      "tflops_eager": 39.29294148163039,
+      "speedup_vs_eager": 0.6613840148728423
+    }
+  ],
+  "memory": [
+    {
+      "B": 1,
+      "N": 1024,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "fa_peak_extra_mb": 24.125,
+      "eager_peak_extra_mb": 132.0
+    },
+    {
+      "B": 1,
+      "N": 2048,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "fa_peak_extra_mb": 48.25,
+      "eager_peak_extra_mb": 520.0
+    },
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 16,
+      "D": 64,
+      "causal": false,
+      "fa_peak_extra_mb": 96.5,
+      "eager_peak_extra_mb": 2064.0
+    },
+    {
+      "B": 1,
+      "N": 1024,
+      "H": 16,
+      "D": 64,
+      "causal": true,
+      "fa_peak_extra_mb": 24.125,
+      "eager_peak_extra_mb": 132.0
+    },
+    {
+      "B": 1,
+      "N": 2048,
+      "H": 16,
+      "D": 64,
+      "causal": true,
+      "fa_peak_extra_mb": 48.25,
+      "eager_peak_extra_mb": 520.0
+    },
+    {
+      "B": 1,
+      "N": 4096,
+      "H": 16,
+      "D": 64,
+      "causal": true,
+      "fa_peak_extra_mb": 96.5,
+      "eager_peak_extra_mb": 2064.0
+    }
+  ]
+}
