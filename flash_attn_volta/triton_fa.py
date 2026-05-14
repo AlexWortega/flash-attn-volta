@@ -32,23 +32,35 @@ import triton.language as tl
 
 
 # -----------------------------------------------------------------------------
-# Tile selection
+# Autotune config sets
 # -----------------------------------------------------------------------------
 
-def _pick_block_sizes(head_dim_internal: int) -> tuple[int, int, int, int]:
-    """Tile sizes for the kernel.
+# V100 + Triton 2.3 quirks (empirically discovered, see PERF.md):
+#   * tl.dot K-dim must be 64 → BLOCK_D forced to 64.
+#   * BLOCK_N ∈ {32, 128} triggers an LLVM-IR codegen IndexError → fix BN=64.
+#   * num_warps=8 produces silently-wrong output → keep num_warps=4.
+# That leaves BLOCK_M and num_stages as the only safe knobs.
 
-    Swept on V100 + Triton 2.3 at (1,1024,16,64) and (1,1024,8,128); BM=BN=64,
-    num_warps=4, num_stages=2 wins for both paths (see probes/probe_perf_sweep*).
-    """
-    # head_dim_internal in {64, 128}
-    return 64, 64, 4, 2
+_FWD_CONFIGS_D64 = [
+    triton.Config({'BLOCK_M': 64,  'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=2),
+    triton.Config({'BLOCK_M': 64,  'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=3),
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=2),
+    triton.Config({'BLOCK_M': 128, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=3),
+]
+
+# D=128 doubles the per-program SMEM/register pressure (two BLOCK_D=64 halves).
+# BLOCK_M=128 with ns=3 spilled badly in probes; restrict to BM=64.
+_FWD_CONFIGS_D128 = [
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=2),
+    triton.Config({'BLOCK_M': 64, 'BLOCK_N': 64, 'BLOCK_D': 64}, num_warps=4, num_stages=3),
+]
 
 
 # -----------------------------------------------------------------------------
 # Triton kernel (D = 64, single half)
 # -----------------------------------------------------------------------------
 
+@triton.autotune(configs=_FWD_CONFIGS_D64, key=['N_CTX'])
 @triton.jit
 def _fa_fwd_kernel_d64(
     Q, K, V, Out, Lse,
@@ -59,12 +71,11 @@ def _fa_fwd_kernel_d64(
     stride_oz, stride_oh, stride_om, stride_on,
     stride_lz, stride_lh,
     Z, H, N_CTX,
+    IS_CAUSAL: tl.constexpr,
+    WRITE_LSE: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_N: tl.constexpr,
-    IS_CAUSAL: tl.constexpr,
-    EVEN_N: tl.constexpr,
-    WRITE_LSE: tl.constexpr,
 ):
     """One program = one (Q tile, batch_head). Streams K/V tiles. D fixed at BLOCK_D."""
     start_m = tl.program_id(0)
@@ -104,16 +115,12 @@ def _fa_fwd_kernel_d64(
         hi = N_CTX
 
     for start_n in range(0, hi, BLOCK_N):
-        if EVEN_N:
-            k = tl.load(k_ptrs + start_n * stride_kn)
-        else:
-            k_col_mask = (start_n + offs_n) < N_CTX
-            k = tl.load(k_ptrs + start_n * stride_kn,
-                        mask=k_col_mask[None, :], other=0.0)
+        n_col_mask = (start_n + offs_n) < N_CTX
+        k = tl.load(k_ptrs + start_n * stride_kn,
+                    mask=n_col_mask[None, :], other=0.0)
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         qk += tl.dot(q, k)
-        if not EVEN_N:
-            qk = tl.where(((start_n + offs_n) < N_CTX)[None, :], qk, float("-inf"))
+        qk = tl.where(n_col_mask[None, :], qk, float("-inf"))
         if IS_CAUSAL:
             causal_mask = offs_m[:, None] >= (start_n + offs_n[None, :])
             qk = tl.where(causal_mask, qk, float("-inf"))
@@ -126,11 +133,8 @@ def _fa_fwd_kernel_d64(
         l_curr = tl.sum(p, 1) + l_prev
 
         acc = acc * alpha[:, None]
-        if EVEN_N:
-            v = tl.load(v_ptrs + start_n * stride_vn)
-        else:
-            v = tl.load(v_ptrs + start_n * stride_vn,
-                        mask=((start_n + offs_n) < N_CTX)[:, None], other=0.0)
+        v = tl.load(v_ptrs + start_n * stride_vn,
+                    mask=n_col_mask[:, None], other=0.0)
         p_fp16 = p.to(v.dtype)
         pv = tl.zeros([BLOCK_M, BLOCK_D], dtype=tl.float32)
         pv += tl.dot(p_fp16, v)
@@ -159,6 +163,7 @@ def _fa_fwd_kernel_d64(
 # Triton kernel (D = 128, two 64-halves)
 # -----------------------------------------------------------------------------
 
+@triton.autotune(configs=_FWD_CONFIGS_D128, key=['N_CTX'])
 @triton.jit
 def _fa_fwd_kernel_d128(
     Q, K, V, Out, Lse,
@@ -169,12 +174,11 @@ def _fa_fwd_kernel_d128(
     stride_oz, stride_oh, stride_om, stride_on,
     stride_lz, stride_lh,
     Z, H, N_CTX,
+    IS_CAUSAL: tl.constexpr,
+    WRITE_LSE: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_D: tl.constexpr,
     BLOCK_N: tl.constexpr,
-    IS_CAUSAL: tl.constexpr,
-    EVEN_N: tl.constexpr,
-    WRITE_LSE: tl.constexpr,
 ):
     """Same as _fa_fwd_kernel_d64 but the head_dim is split into two BLOCK_D halves."""
     start_m = tl.program_id(0)
@@ -228,20 +232,15 @@ def _fa_fwd_kernel_d128(
         hi = N_CTX
 
     for start_n in range(0, hi, BLOCK_N):
-        if EVEN_N:
-            k_lo = tl.load(k_ptrs_lo + start_n * stride_kn)
-            k_hi = tl.load(k_ptrs_hi + start_n * stride_kn)
-        else:
-            k_col_mask = (start_n + offs_n) < N_CTX
-            k_lo = tl.load(k_ptrs_lo + start_n * stride_kn,
-                           mask=k_col_mask[None, :], other=0.0)
-            k_hi = tl.load(k_ptrs_hi + start_n * stride_kn,
-                           mask=k_col_mask[None, :], other=0.0)
+        n_col_mask = (start_n + offs_n) < N_CTX
+        k_lo = tl.load(k_ptrs_lo + start_n * stride_kn,
+                       mask=n_col_mask[None, :], other=0.0)
+        k_hi = tl.load(k_ptrs_hi + start_n * stride_kn,
+                       mask=n_col_mask[None, :], other=0.0)
         qk = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
         qk += tl.dot(q_lo, k_lo)
         qk += tl.dot(q_hi, k_hi)
-        if not EVEN_N:
-            qk = tl.where(((start_n + offs_n) < N_CTX)[None, :], qk, float("-inf"))
+        qk = tl.where(n_col_mask[None, :], qk, float("-inf"))
         if IS_CAUSAL:
             causal_mask = offs_m[:, None] >= (start_n + offs_n[None, :])
             qk = tl.where(causal_mask, qk, float("-inf"))
@@ -255,14 +254,10 @@ def _fa_fwd_kernel_d128(
 
         acc_lo = acc_lo * alpha[:, None]
         acc_hi = acc_hi * alpha[:, None]
-        if EVEN_N:
-            v_lo = tl.load(v_ptrs_lo + start_n * stride_vn)
-            v_hi = tl.load(v_ptrs_hi + start_n * stride_vn)
-        else:
-            v_lo = tl.load(v_ptrs_lo + start_n * stride_vn,
-                           mask=((start_n + offs_n) < N_CTX)[:, None], other=0.0)
-            v_hi = tl.load(v_ptrs_hi + start_n * stride_vn,
-                           mask=((start_n + offs_n) < N_CTX)[:, None], other=0.0)
+        v_lo = tl.load(v_ptrs_lo + start_n * stride_vn,
+                       mask=n_col_mask[:, None], other=0.0)
+        v_hi = tl.load(v_ptrs_hi + start_n * stride_vn,
+                       mask=n_col_mask[:, None], other=0.0)
         p_fp16 = p.to(v_lo.dtype)
         pv_lo = tl.zeros([BLOCK_M, BLOCK_D], dtype=tl.float32)
         pv_hi = tl.zeros([BLOCK_M, BLOCK_D], dtype=tl.float32)
@@ -374,19 +369,15 @@ def _run_kernel(
         lse = torch.empty((1,), dtype=torch.float32, device=q.device)
         lse_stride_z, lse_stride_h = 0, 0
 
-    BLOCK_M, BLOCK_N, num_warps, num_stages = _pick_block_sizes(D_INT)
-    grid = (triton.cdiv(N, BLOCK_M), B * H, 1)
-
     if D_INT == 64:
         kernel = _fa_fwd_kernel_d64
-        BLOCK_D = 64
     elif D_INT == 128:
         kernel = _fa_fwd_kernel_d128
-        BLOCK_D = 64
     else:
         raise AssertionError(f"unreachable D_INT={D_INT}")
 
-    even_n = (N % BLOCK_N) == 0
+    # Grid depends on the autotuned BLOCK_M, so use a callable form.
+    grid = lambda meta: (triton.cdiv(N, meta['BLOCK_M']), B * H, 1)
     kernel[grid](
         q_, k_, v_, out_, lse,
         sm_scale,
@@ -396,11 +387,8 @@ def _run_kernel(
         out_.stride(0), out_.stride(1), out_.stride(2), out_.stride(3),
         lse_stride_z, lse_stride_h,
         B, H, N,
-        BLOCK_M=BLOCK_M, BLOCK_D=BLOCK_D, BLOCK_N=BLOCK_N,
-        IS_CAUSAL=causal, EVEN_N=even_n,
+        IS_CAUSAL=causal,
         WRITE_LSE=write_lse,
-        num_warps=num_warps,
-        num_stages=num_stages,
     )
 
     out = out_.permute(0, 2, 1, 3).contiguous()
