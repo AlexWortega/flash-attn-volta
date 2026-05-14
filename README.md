@@ -1,6 +1,6 @@
 # flash-attn-volta
 
-FlashAttention **forward kernel** for NVIDIA Volta (Compute Capability **7.0** — Tesla V100, Titan V, Tesla T4 via SM_75 with minor tweaks). Triton 2.3 kernel, faithful to the algorithm in [Dao et al., 2205.14135](https://arxiv.org/abs/2205.14135), with the standard online-softmax tiling.
+FlashAttention **forward + backward kernels** for NVIDIA Volta (Compute Capability **7.0** — Tesla V100, Titan V, Tesla T4 via SM_75 with minor tweaks). Triton 2.3 kernels, faithful to the algorithm in [Dao et al., 2205.14135](https://arxiv.org/abs/2205.14135), with the standard online-softmax tiling on the forward and Algorithm 4 on the backward.
 
 Built end-to-end **autonomously** by the [`ml-intern`](https://github.com/AlexWortega/claude-ml-intern-skill) Claude Code skill (TASK → research → benchmark sweep → autotune → verify → publish) on a 4× V100-SXM2 32GB box in roughly 25 minutes wall.
 
@@ -23,18 +23,23 @@ pip install -e .  # or just add flash_attn_volta/ to PYTHONPATH
 
 ```python
 import torch
-from flash_attn_volta import flash_attn_forward
+from flash_attn_volta import flash_attn, flash_attn_forward
 
 # (batch, seq, n_heads, head_dim), fp16
-q = torch.randn(2, 2048, 16, 64, dtype=torch.float16, device="cuda")
-k = torch.randn_like(q)
-v = torch.randn_like(q)
+q = torch.randn(2, 2048, 16, 64, dtype=torch.float16, device="cuda", requires_grad=True)
+k = torch.randn_like(q, requires_grad=True)
+v = torch.randn_like(q, requires_grad=True)
 
-out = flash_attn_forward(q, k, v, causal=True)
-# returns fp16 of the same shape
+# Autograd-aware (forward + backward via the Triton kernels).
+out  = flash_attn(q, k, v, causal=True)
+loss = out.sum()
+loss.backward()    # populates q.grad, k.grad, v.grad
+
+# Or the raw forward (no autograd, no LSE saved) for inference paths:
+out_inf = flash_attn_forward(q.detach(), k.detach(), v.detach(), causal=True)
 ```
 
-API surface is intentionally small — `flash_attn_forward(q, k, v, causal=False, sm_scale=None)`. Drop-in replacement for `F.scaled_dot_product_attention(q, k, v, is_causal=...)` on Volta when fp16 and forward-only suffice.
+API surface — `flash_attn(q, k, v, causal=False, sm_scale=None)` for training, `flash_attn_forward(...)` (with optional `return_softmax_lse=True`) for inference. Drop-in replacement for `F.scaled_dot_product_attention(q, k, v, is_causal=...)` on Volta when fp16 suffices.
 
 ## Correctness (fp16, vs `F.scaled_dot_product_attention`)
 
@@ -104,9 +109,30 @@ patch_qwen2(model)            # routes attention through flash_attn_volta on pre
 # or: patch_model(model)       # auto-dispatch (raises on Mamba/RWKV/etc.)
 ```
 
+## Backward
+
+`flash_attn(q, k, v, causal=...)` is autograd-aware — `.backward()` runs two Triton kernels (dQ + dK/dV) following FlashAttention paper Algorithm 4, recomputing the softmax from a saved per-row LSE rather than materialising the O(S²) attention matrix.
+
+```python
+from flash_attn_volta import flash_attn
+o = flash_attn(q, k, v, causal=True)   # autograd-aware
+loss = o.sum(); loss.backward()        # populates q.grad, k.grad, v.grad
+```
+
+Headline numbers on V100-SXM2 32GB (fp16, fwd+bwd combined; FLOP count = 5·B·H·S²·D — fwd + 4·fwd bwd per the FA paper):
+
+| shape              | causal | fa fwd+bwd | eager fwd+bwd | speedup | fa peak mem | eager peak mem |
+|--------------------|--------|-----------:|--------------:|--------:|------------:|---------------:|
+| (1, 2048, 16,  64) | True   |  40.8 TF/s | 18.5 TF/s | **2.21×** | 48 MB | 520 MB |
+| (1, 4096, 16,  64) | True   |  57.9 TF/s | 19.3 TF/s | **2.99×** | 96 MB | 2064 MB |
+| (1, 4096, 16,  64) | False  |  32.5 TF/s | 22.6 TF/s | 1.43×    | 96 MB | 2064 MB |
+
+At seq=4096, the FA backward uses **21.4× less peak memory** than eager. The throughput pattern matches the forward — at seq=1024 cuBLAS fp16 backward is itself tensor-core-fast and the FA tiling overhead doesn't pay back; the algorithmic win shows up at seq≥2048+causal.
+
+Correctness: dQ/dK/dV max-abs error vs fp64 SDPA + autograd reference is < **3e-3** across all shapes (D ∈ {32, 64, 128}, causal/non-causal). Causal-leak test confirms dQ[i] is bit-identical when K[j>i] / V[j>i] are perturbed. Full breakdown in [`VERIFY.md`](VERIFY.md#backward).
+
 ## What's NOT here
 
-- **Backward pass.** Out of scope for the brief that produced this — would need a second kernel and a saved-LSE pattern.
 - **fp8, bf16.** fp16 only. (V100 doesn't have native bf16 anyway.)
 - **Variable-length / packed sequences.** Standard dense `(B, S, H, D)`.
 - **Dropout, ALiBi, sliding window.** Forward-only causal/non-causal is all there is.

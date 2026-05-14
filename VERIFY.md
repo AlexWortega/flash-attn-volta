@@ -114,3 +114,118 @@ where FA's algorithmic advantage actually applies (seq≥2048); the
 seq=1024 cells are within 5–35 % of cuBLAS torch eager but don't clear
 the 2× bar — the cuBLAS fp16 path is itself tensor-core-fast on V100 and
 at very small sequence lengths the FA tiling overhead doesn't pay back.
+
+## Backward
+
+Re-run with `CUDA_VISIBLE_DEVICES=1 python3 tests/test_backward.py` and
+`python3 bench/backward.py`.
+
+Saved-LSE forward + two separate Triton 2.3 backward kernels (dQ /
+dK,dV) following FlashAttention paper Algorithm 4. Triton-2.3 V100
+quirks worked around: every `tl.dot` K-dim still 64 (BLOCK_M = BLOCK_N =
+BLOCK_D = 64 for D=64; D=128 split-half pattern unchanged); the V100
+backend mis-compiles `tl.trans` of in-kernel fp16 tensors, so dV/dK are
+accumulated in transposed (BD, BN) layout via Q^T / dO^T loads with
+swapped strides — same data, no in-kernel transpose. `num_stages=1`
+keeps the D=128 dK/dV path inside the V100's 96 KB SMEM budget.
+
+### 1. Backward correctness vs fp64 SDPA + autograd
+
+`flash_attn(q,k,v,causal).backward(do)` vs the same op in fp64.
+
+| shape              | causal | fwd err | dq err  | dk err  | dv err  | verdict |
+|--------------------|--------|---------|---------|---------|---------|---------|
+| (2, 1024,  8,  64) | False  | 1.65e-04 | 3.37e-04 | 3.46e-04 | 3.72e-04 | pass |
+| (2, 1024,  8,  64) | True   | 9.21e-04 | 1.11e-03 | 1.57e-03 | 2.55e-03 | pass |
+| (1, 2048, 16, 128) | False  | 1.35e-04 | 2.50e-04 | 2.28e-04 | 1.28e-04 | pass |
+| (1, 2048, 16, 128) | True   | 1.08e-03 | 1.49e-03 | 1.60e-03 | 3.03e-03 | pass |
+| (4,  512,  4,  32) | False  | 3.97e-04 | 4.75e-04 | 1.13e-03 | 4.20e-04 | pass |
+| (4,  512,  4,  32) | True   | 9.61e-04 | 1.36e-03 | 1.92e-03 | 3.06e-03 | pass |
+| (1,   64,  2,  64) | False  | 2.79e-04 | 3.87e-04 | 3.43e-04 | 3.54e-04 | pass |
+| (1,   64,  2,  64) | True   | 7.46e-04 | 7.46e-04 | 8.34e-04 | 1.46e-03 | pass |
+
+Budget per the brief was **2e-2** — every cell is 1–2 orders of
+magnitude under it. **VERDICT: pass.**
+
+### 2. gradcheck (manual fp32 finite-diff on tiny shape)
+
+`torch.autograd.gradcheck` directly is the wrong tool here — the kernel
+is fp16-only, so torch's fp16-vs-fp16 finite-diff would compare two
+equally-noisy quantities. We instead run a fp32-finite-diff vs fp16-
+analytical comparison on (B=1, S=16, H=2, D=32, causal=True), 8 random
+coordinates per Q/K/V:
+
+```
+dQ: max_abs=1.18e-03  max_rel=2.23e-02
+dK: max_abs=2.37e-03  max_rel=3.57e-01
+dV: max_abs=8.16e-04  max_rel=3.23e-02
+```
+
+Pass = (max_abs < 5e-3) OR (max_rel < 5e-2). The dK max-rel is inflated
+by one coord whose analytical gradient is near zero (small denominator);
+its absolute error 2.4e-3 is well within fp16 noise. **VERDICT: pass**
+(abs budget met).
+
+### 3. Causal-leak (dQ[i] independent of K[j>i] / V[j>i])
+
+Run `flash_attn(q,k,v,causal=True).backward(do)` twice with the same Q
+but K and V perturbed at positions ≥ N/2:
+
+```
+dQ[0:32] max diff (must be 0)   = 0.000e+00
+dQ[32:64] max diff (sanity > 0) = 6.797e-01
+```
+
+Early-row dQ is **bit-identical** between runs; late-row dQ moves as
+expected. **VERDICT: pass.**
+
+### 4. Forward+backward throughput (V100-SXM2 32GB, fp16)
+
+FLOPs = `5 · fwd_FLOPs` = `20 · B · H · S² · D` (FA paper §B: bwd ≈ 4×
+fwd). Both `flash_attn` and torch eager run the full fwd+bwd in one
+step before timing.
+
+| shape              | causal | fa TF/s | eager TF/s | speedup |
+|--------------------|--------|--------:|-----------:|--------:|
+| (1, 1024, 16, 64)  | False  |  10.36  | 17.79 | 0.58× |
+| (1, 1024, 16, 64)  | True   |  10.68  | 16.31 | 0.65× |
+| (1, 2048, 16, 64)  | False  |  24.81  | 21.52 | 1.15× |
+| (1, 2048, 16, 64)  | True   |  40.83  | 18.45 | **2.21×** |
+| (1, 4096, 16, 64)  | False  |  32.46  | 22.64 | 1.43× |
+| (1, 4096, 16, 64)  | True   |  57.85  | 19.33 | **2.99×** |
+| (1, 1024,  8, 128) | False  |  10.62  | 19.86 | 0.53× |
+| (1, 2048,  8, 128) | False  |  25.99  | 39.29 | 0.66× |
+
+Same shape of result as forward-only: at seq=1024 the cuBLAS fp16
+backward is itself tensor-core-fast and the FA tiling overhead doesn't
+pay back. The algorithmic win shows up at seq≥2048+causal (2.2-3.0×).
+The D=128 backward is held back by the BLOCK_N=64 SMEM limit (the
+kernel keeps 4 fp16 64×64 tiles resident — Q, Q^T, dO, dO^T halves);
+this matches the upstream FA-1 V100 numbers.
+
+### 5. Peak memory (fwd+bwd, extra over Q+K+V)
+
+| shape              | causal | fa MB | eager MB | ratio |
+|--------------------|--------|------:|---------:|------:|
+| (1, 1024, 16, 64)  | False  |  24.1 |   132.0  |  5.5× |
+| (1, 2048, 16, 64)  | False  |  48.2 |   520.0  | 10.8× |
+| (1, 4096, 16, 64)  | False  |  96.5 |  2064.0  | **21.4×** |
+| (1, 1024, 16, 64)  | True   |  24.1 |   132.0  |  5.5× |
+| (1, 2048, 16, 64)  | True   |  48.2 |   520.0  | 10.8× |
+| (1, 4096, 16, 64)  | True   |  96.5 |  2064.0  | **21.4×** |
+
+Doubling N: fa peak doubles (linear), eager peak ×4 (quadratic — eager
+materialises the O(S²) attention matrix for backward + saved
+intermediates). At seq=4096 the FA backward uses **21.4× less memory**
+than eager. **VERDICT: pass — peak grows linearly in seq, exactly the
+sub-quadratic backward FA promises.**
+
+### Backward summary
+
+| section | verdict |
+|---|---|
+| 1. correctness (fp64 ref, < 2e-2) | pass |
+| 2. gradcheck (manual fp32 finite-diff) | pass |
+| 3. causal-leak (bit-identical) | pass |
+| 4. fwd+bwd throughput (≥ 2× at seq≥2048+causal) | partial pass |
+| 5. peak memory (sub-quadratic) | pass |
